@@ -1,4 +1,4 @@
-module github.com/thangvuhoangit/contrib/http/fiber
+module github.com/thangvuhoangit/contrib/fiberexecutor
 
 go 1.22.4
 
