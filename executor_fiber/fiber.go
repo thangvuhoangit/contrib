@@ -58,7 +58,8 @@ func NewFiberExecutor(config FiberExecutorConfig) *gcakit.Executor {
 			for _, prehook := range cfg.PreHooks {
 				prehook(ctx)
 			}
-			return engine.Listen(cfg.Addr)
+
+			return engine.Server().ListenAndServe(cfg.Addr)
 		},
 		Interrupt: func(err error) {
 			for _, posthook := range cfg.PostHooks {
