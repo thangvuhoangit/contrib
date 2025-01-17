@@ -2,8 +2,11 @@ package executor_fiber
 
 import (
 	"context"
+	"os"
+	"sync"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/log"
 	"github.com/thangvuhoangit/gcakit"
 )
 
@@ -29,8 +32,8 @@ type FiberExecutorConfig struct {
 	Name        string // "fiber http server"
 	FiberConfig fiber.Config
 	Options     []FiberExecutorOption
-	PreHooks    []func(ctx context.Context)
-	PostHooks   []func(err error)
+	PreHooks    []func(ctx context.Context, engine *fiber.App)
+	PostHooks   []func(err error, engine *fiber.App)
 }
 
 type FiberExecutorOption func(*fiber.App)
@@ -40,6 +43,10 @@ func configDefault(config FiberExecutorConfig) FiberExecutorConfig {
 	cfg.FiberConfig = defaultFiberConfig(config.FiberConfig)
 	cfg.Options = config.Options
 	cfg.FiberConfig.AppName = config.Name
+	cfg.PreHooks = config.PreHooks
+	cfg.PostHooks = config.PostHooks
+	cfg.Name = config.Name
+	cfg.Addr = config.Addr
 
 	return cfg
 }
@@ -47,62 +54,51 @@ func configDefault(config FiberExecutorConfig) FiberExecutorConfig {
 func NewFiberExecutor(config FiberExecutorConfig) *gcakit.Executor {
 	cfg := configDefault(config)
 	engine := fiber.New(cfg.FiberConfig)
+	log.SetOutput(os.Stdout)
 
-	for _, hook := range cfg.Options {
-		hook(engine)
+	if len(cfg.Options) > 0 {
+		owg := new(sync.WaitGroup)
+		owg.Add(len(cfg.Options))
+		for _, hook := range cfg.Options {
+			go func() {
+				hook(engine)
+				owg.Done()
+			}()
+		}
+		owg.Wait()
 	}
 
 	executor := &gcakit.Executor{
 		Name: cfg.Name,
 		Execute: func(ctx context.Context) error {
-			for _, prehook := range cfg.PreHooks {
-				prehook(ctx)
+			if len(cfg.PreHooks) > 0 {
+				wg := new(sync.WaitGroup)
+				wg.Add(len(cfg.PreHooks))
+				for _, prehook := range cfg.PreHooks {
+					go func() {
+						prehook(ctx, engine)
+						wg.Done()
+					}()
+				}
+				wg.Wait()
 			}
 
-			return engine.Server().ListenAndServe(cfg.Addr)
+			go engine.Listen(cfg.Addr)
+			return nil
 		},
 		Interrupt: func(err error) {
+			wg := new(sync.WaitGroup)
+			wg.Add(len(cfg.PostHooks))
 			for _, posthook := range cfg.PostHooks {
-				posthook(err)
+				go func() {
+					posthook(err, engine)
+					wg.Done()
+				}()
 			}
-
-			engine.Shutdown()
+			wg.Wait()
+			engine.ShutdownWithContext(context.Background())
 		},
 	}
-
-	// engine.Use(fiberzap.New(fiberzap.Config{
-	// 	Logger:   zapLogger,
-	// 	Fields:   []string{"protocol", "pid", "ip", "host", "url", "route", "method", "queryParams", "bytesReceived", "bytesSent"},
-	// 	SkipURIs: []string{"/swagger/*"},
-	// }))
-
-	// engine.Use(requestid.New())
-	// engine.Use(recover.New())
-	// engine.Use(cors.New())
-	// engine.Use(compress.New(compress.Config{
-	// 	Level: compress.LevelBestSpeed,
-	// }))
-	// engine.Use(helmet.New())
-
-	// redisStorage := redis.New(redis.Config{
-	// 	Host:      cfg.Redis.Host,
-	// 	Port:      cfg.Redis.Port,
-	// 	Username:  cfg.Redis.Username,
-	// 	Password:  cfg.Redis.Password,
-	// 	Database:  cfg.Redis.DB,
-	// 	Reset:     false,
-	// 	TLSConfig: nil,
-	// 	PoolSize:  10 * runtime.GOMAXPROCS(0),
-	// })
-
-	// fiberSession := sessions.NewFiberSession(redisStorage)
-
-	// endpoint.ConfigureEndpoints(ctx, engine, logger, cfg, fiberSession)
-	// endpoint.ConfigureSwagger(ctx, engine, logger, cfg)
-
-	// ctx.AddToStartUpMessage("HTTP server", fmt.Sprintf("http://127.0.0.1%s (bound on host 0.0.0.0 and port %s)", cfg.HTTP.Port, cfg.HTTP.Port))
-
-	// return func() { engine.Shutdown() }, engine.Listen(cfg.HTTP.Port)
 
 	return executor
 }
